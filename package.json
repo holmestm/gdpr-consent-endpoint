@@ -1,8 +1,8 @@
 {
   "name": "pmconsent",
-  "version": "1.0.0",
+  "version": "5.5.0",
   "description": "Pacman Consent Capture",
-  "main": "index.js",
+  "main": "cluster.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -17,11 +17,12 @@
     "fs": "0.0.1-security",
     "http": "0.0.0",
     "https": "^1.0.0",
-    "minimalist": "^1.0.0",
+    "minimist": "^1.2.0",
     "qs": "^6.5.1",
-    "querystring": "^0.2.0",
+    "sign-payload": "^1.0.0",
     "underscore": "^1.9.0",
     "util": "^0.10.3",
+    "winston": "^2.4.2",
     "winston-loggly-bulk": "^2.0.2"
   }
 }
