@@ -69,6 +69,10 @@ if (redirectURL == "UNDEFINED") {
     winston.error('Configuration incomplete... exiting')
     return (-1);
 }
+
+var redirectParsed=url.parse(redirectURL);
+redirectURL += (redirectParsed.query==undefined) ? "?" : "&";
+
 // Code to run if we're in the master process
 if (cluster.isMaster) {
 
@@ -237,14 +241,16 @@ if (cluster.isMaster) {
         }
         debug(`2 ${redirect} ${typeof redirect}`)
         if (redirect) {
-            debug('Generating redirect to ' + redirectURL);
+            var { email, uid, sig } = req.qparams;
+            var rURL=redirectURL + `email=${email}&uid=${uid}`;
+            debug('Generating redirect to ' + rURL);
             res.statusCode = 302;
-            res.setHeader("Location", redirectURL);
+            res.setHeader("Location", rURL);
             res.end();
         } else {
-            debug('Not generating redirect to ' + redirectURL);
+            debug('Not generating redirect to ' + rURL);
             res.writeHead(200, {'Content-Type': 'text/html'});      
-            res.write(`<html><body><a href="${redirectURL}">Thankyou for your consent</a></body></html>`);
+            res.write(`<html><body><a href="${rURL}">Thankyou for your consent</a></body></html>`);
             res.end();         
         }
     })
