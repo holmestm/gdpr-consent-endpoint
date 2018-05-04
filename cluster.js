@@ -7,7 +7,7 @@ var cluster = require('cluster'),
 require('winston-loggly-bulk');
 
 var argv = require('minimist')(process.argv.slice(2), 
-    {default : {redirectURL: 'https://www.net-a-porter.com/en-gb/account', 
+    {default : {redirectURL: 'UNDEFINED', 
                 logglySubdomain: "DISABLED", 
                 logglyToken: "DISABLED",
                 logglyTags: "pacman|gdpr",
@@ -44,6 +44,7 @@ var logglySubdomain = process.env.LOGGLY_SUBDOMAIN || argv.logglySubdomain;
 var logglyTags      = process.env.LOGGLY_TAGS || argv.logglyTags;
 var logLevel        = process.env.LOG_LEVEL || argv.logLevel || "debug";
 var logfile         = process.env.LOG_FILE || argv.logfile || "NONE";
+var healthcheckContext = process.env.HEALTH_CHECK  || argv.healthCheckContext || "/ping";
 
 winston.handleExceptions([ winston.transports.Console]);
 if (logfile!==undefined && logfile!=="NONE"){
@@ -63,6 +64,11 @@ if (logglySubdomain!==undefined && logglySubdomain!="DISABLED") {
         level: logLevel
 })}
 winston.level = logLevel;
+
+if (redirectURL == "UNDEFINED") {
+    winston.error('Configuration incomplete... exiting')
+    return (-1);
+}
 // Code to run if we're in the master process
 if (cluster.isMaster) {
 
@@ -131,6 +137,10 @@ if (cluster.isMaster) {
             req.qparams = query;
             debug("Email " + req.qparams.email || "not supplied");
             next();
+        } else if (pathname==healthcheckContext) {
+            res.writeHead(200, {'Content-Type': 'text/html'});
+            info(`Instance health check... succeeded`);
+            res.end("200 Success");
         }
         else {
             httpError(404, req, res, "Not Found");
