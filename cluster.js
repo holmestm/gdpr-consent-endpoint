@@ -16,7 +16,8 @@ var cluster = require('cluster'),
 require('winston-loggly-bulk');
 
 var argv = require('minimist')(process.argv.slice(2), 
-    {default : {redirectURL: "NOT_CONFIGURED", 
+    {default : {redirectURL: "NOT_CONFIGURED",
+                redirectURLN: "NOT_CONFIGURED", 
                 logglySubdomain: "DISABLED", 
                 logglyToken: "DISABLED",
                 logglyTags: "pacman|gdpr",
@@ -46,6 +47,7 @@ if (cluster.isMaster && argv.debug) {
 }
 
 var redirectURL     = process.env.REDIRECT_URL || argv.redirectURL;
+var redirectURLN    = process.env.REDIRECT_URL_N || argv.redirectURLN;
 var ddbTable        = process.env.CONSENT_TABLE || argv.consentTable;
 var snsTopic        = process.env.CONSENT_TOPIC || argv.consentTopic;
 var webContext      = process.env.WEB_CONTEXT || argv.context;
@@ -58,11 +60,19 @@ var logfile         = process.env.LOG_FILE || argv.logfile || "NONE";
 var ddbEndpointURL  = process.env.DDB_ENDPOINT || argv.ddbEndpoint || "AWS";
 var healthcheckContext = process.env.HEALTH_CHECK  || argv.healthCheckContext || "/ping";
 
-winston.handleExceptions([ winston.transports.Console]);
+var extendURL = (x) => {
+    var urlParsed=url.parse(x);
+    x += (urlParsed.query==undefined) ? "?" : "&";
+    return x        
+}
+redirectURL = extendURL(redirectURL);
+redirectURLN = extendURL(redirectURLN);
+
+//winston.handleExceptions([ winston.transports.Console]);
 if (logfile!==undefined && logfile!=="NONE"){
     winston.add(winston.transports.File, {
         filename: logfile,
-        handleExceptions: true,
+        handleExceptions: false,
         json: false
     })
 }
@@ -72,18 +82,15 @@ if (logglySubdomain!==undefined && logglySubdomain!="DISABLED") {
         subdomain: logglySubdomain,
         tags: logglyTags.split("|"),
         json: true,
-        handleExceptions: true,
+        handleExceptions: false,
         level: logLevel
 })}
 winston.level = logLevel;
 
-if (redirectURL == "NOT_CONFIGURED") {
+if ((redirectURL == "NOT_CONFIGURED") || (redirectURLN == "NOT_CONFIGURED")) {
     winston.error('Configuration incomplete... exiting')
     return (-1);
 }
-
-var redirectParsed=url.parse(redirectURL);
-redirectURL += (redirectParsed.query==undefined) ? "?" : "&";
 
 // Code to run if we're in the master process
 if (cluster.isMaster) {
@@ -200,8 +207,9 @@ if (cluster.isMaster) {
 
     // add query params to DynamoDB + raise event via SNS if configured
     app.use((req, res, next) => {
-        var { email, uid, sig, consent: consentParam } = req.qparams;
+        var { email, uid, sig, consent: consentParam, campaign } = req.qparams;
         var consent = consentParam==undefined || !consentParam.toUpperCase().startsWith('N');
+        req.consent = consent;
         if (email!==undefined && uid!==undefined) {
             var d = (new Date()).toJSON();
             var item = {
@@ -209,6 +217,7 @@ if (cluster.isMaster) {
                 'uid': {'S': uid},
                 'sig': {'S': sig || "NOT_SUPPLIED"},
                 'consent': {'BOOL': consent},
+                'campaign': {'S': campaign || "DEFAULT"},
                 'timestamp': {'S': d}
             };
 
@@ -217,7 +226,6 @@ if (cluster.isMaster) {
                 var ddbArgs = {
                     'TableName': ddbTable,
                     'Item': item
-//                    ,'Expected': { 'email': { Exists: false } } 
                 };
 
                 ddb.putItem(ddbArgs, function(err, data) {
@@ -264,10 +272,9 @@ if (cluster.isMaster) {
         if (req.qparams!==undefined && req.qparams.redirect!==undefined) {
             redirect=req.qparams.redirect==="true";
         }
-        debug(`2 ${redirect} ${typeof redirect}`)
-        if (redirect) {
-            var { email, uid, sig } = req.qparams;
-            var rURL=redirectURL + `email=${email}&uid=${uid}`;
+    var { email, uid, sig } = req.qparams;
+    var rURL=(req.consent ? redirectURL : redirectURLN) + `email=${email}&uid=${uid}`;
+    if (redirect) {
             debug('Generating redirect to ' + rURL);
             res.statusCode = 302;
             res.setHeader("Location", rURL);
@@ -275,7 +282,7 @@ if (cluster.isMaster) {
         } else {
             debug('Not generating redirect to ' + rURL);
             res.writeHead(200, {'Content-Type': 'text/html'});      
-            res.write(`<html><body><a href="${rURL}">Thankyou for your consent</a></body></html>`);
+            res.write(`<html><body><a href="${rURL}">Thankyou for your reply</a></body></html>`);
             res.end();         
         }
     })
