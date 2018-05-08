@@ -1,4 +1,4 @@
-// Marketing Consent Logger - Tim Holmes - 3rd May 2018 - v5.5
+// Marketing Consent Logger - Tim Holmes - 3rd May 2018 - v5.6
 
 var cluster = require('cluster'),
     util = require('util'),
@@ -7,7 +7,7 @@ var cluster = require('cluster'),
 require('winston-loggly-bulk');
 
 var argv = require('minimist')(process.argv.slice(2), 
-    {default : {redirectURL: 'UNDEFINED', 
+    {default : {redirectURL: "NOT_CONFIGURED", 
                 logglySubdomain: "DISABLED", 
                 logglyToken: "DISABLED",
                 logglyTags: "pacman|gdpr",
@@ -20,6 +20,8 @@ var argv = require('minimist')(process.argv.slice(2),
                 redirect: true,
                 debug: true,
                 port: 8081,
+                ddbEndpoint: "AWS",
+                region: "us-east-1",
                 logfile: '/var/log/nodejs/gdpr.log'},
     alias   : {p : 'port'},
     boolean : ["redirect"]});
@@ -44,7 +46,7 @@ var logglySubdomain = process.env.LOGGLY_SUBDOMAIN || argv.logglySubdomain;
 var logglyTags      = process.env.LOGGLY_TAGS || argv.logglyTags;
 var logLevel        = process.env.LOG_LEVEL || argv.logLevel || "debug";
 var logfile         = process.env.LOG_FILE || argv.logfile || "NONE";
-var healthcheckContext = process.env.HEALTH_CHECK  || argv.healthCheckContext || "/ping";
+var ddbEndpointURL  = process.env.DDB_ENDPOINT || argv.ddbEndpoint || "AWS";
 
 winston.handleExceptions([ winston.transports.Console]);
 if (logfile!==undefined && logfile!=="NONE"){
@@ -64,15 +66,6 @@ if (logglySubdomain!==undefined && logglySubdomain!="DISABLED") {
         level: logLevel
 })}
 winston.level = logLevel;
-
-if (redirectURL == "UNDEFINED") {
-    winston.error('Configuration incomplete... exiting')
-    return (-1);
-}
-
-var redirectParsed=url.parse(redirectURL);
-redirectURL += (redirectParsed.query==undefined) ? "?" : "&";
-
 // Code to run if we're in the master process
 if (cluster.isMaster) {
 
@@ -110,8 +103,14 @@ if (cluster.isMaster) {
     AWS.config.region = process.env.REGION || argv.region;
 
     var sns = new AWS.SNS();
-    var ddb = new AWS.DynamoDB();
-    
+    var ddb;
+
+    if (ddbEndpointURL!==undefined && ddbEndpointURL!=="AWS")
+        ddb = new AWS.DynamoDB(`{endpoint: ${ddbEndpointURL}}`)
+    else
+        ddb = new AWS.DynamoDB();
+
+
     var ddbDisabled = ddbTable == "DISABLED";
     var snsDisabled = snsTopic == "DISABLED";
 
@@ -141,10 +140,6 @@ if (cluster.isMaster) {
             req.qparams = query;
             debug("Email " + req.qparams.email || "not supplied");
             next();
-        } else if (pathname==healthcheckContext) {
-            res.writeHead(200, {'Content-Type': 'text/html'});
-            info(`Instance health check... succeeded`);
-            res.end("200 Success");
         }
         else {
             httpError(404, req, res, "Not Found");
@@ -179,23 +174,27 @@ if (cluster.isMaster) {
 
     // add query params to DynamoDB + raise event via SNS if configured
     app.use((req, res, next) => {
-        var { email, uid, sig } = req.qparams;
+        var { email, uid, sig, consent: consentParam } = req.qparams;
+        var consent = consentParam==undefined || !consentParam.toUpperCase().startsWith('N');
         if (email!==undefined && uid!==undefined) {
             var d = (new Date()).toJSON();
             var item = {
                 'email': {'S': email},
                 'uid': {'S': uid},
                 'sig': {'S': sig || "NOT_SUPPLIED"},
+                'consent': {'BOOL': consent},
                 'timestamp': {'S': d}
             };
 
             if (!ddbDisabled) {
                 debug("Persisting consent " + util.inspect(item) + " into " + ddbTable);
-                ddb.putItem({
+                var ddbArgs = {
                     'TableName': ddbTable,
-                    'Item': item,
-                    'Expected': { 'email': { Exists: false } }        
-                }, function(err, data) {
+                    'Item': item
+//                    ,'Expected': { 'email': { Exists: false } } 
+                };
+
+                ddb.putItem(ddbArgs, function(err, data) {
                     if (err) {
                         var returnStatus = 500;
 
@@ -241,16 +240,14 @@ if (cluster.isMaster) {
         }
         debug(`2 ${redirect} ${typeof redirect}`)
         if (redirect) {
-            var { email, uid, sig } = req.qparams;
-            var rURL=redirectURL + `email=${email}&uid=${uid}`;
-            debug('Generating redirect to ' + rURL);
+            debug('Generating redirect to ' + redirectURL);
             res.statusCode = 302;
-            res.setHeader("Location", rURL);
+            res.setHeader("Location", redirectURL);
             res.end();
         } else {
-            debug('Not generating redirect to ' + rURL);
+            debug('Not generating redirect to ' + redirectURL);
             res.writeHead(200, {'Content-Type': 'text/html'});      
-            res.write(`<html><body><a href="${rURL}">Thankyou for your consent</a></body></html>`);
+            res.write(`<html><body><a href="${redirectURL}">Thankyou for your consent</a></body></html>`);
             res.end();         
         }
     })
