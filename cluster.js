@@ -77,7 +77,7 @@ if (logglySubdomain!==undefined && logglySubdomain!="DISABLED") {
 })}
 winston.level = logLevel;
 
-if (redirectURL == "UNDEFINED") {
+if (redirectURL == "NOT_CONFIGURED") {
     winston.error('Configuration incomplete... exiting')
     return (-1);
 }
