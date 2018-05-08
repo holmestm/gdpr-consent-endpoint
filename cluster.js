@@ -1,4 +1,13 @@
-// Marketing Consent Logger - Tim Holmes - 3rd May 2018 - v5.6
+// Marketing Consent Logger - Tim Holmes - 3rd May 2018 - v6.2
+
+// to test locally, download local DynamoDB service (basically sqlite)
+// create table with e.g. following:
+// aws dynamodb create-table --table-name user-consent \
+// --attribute-definitions AttributeName=email,AttributeType=S AttributeName=uid,AttributeType=S \
+// --key-schema AttributeName=email,KeyType=HASH AttributeName=uid,KeyType=RANGE \
+// --endpoint-url http://localhost:3001 --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 --region us-east-1
+//
+// run this with e.g. -ddbEndpoint=http://localhost:3001
 
 var cluster = require('cluster'),
     util = require('util'),
@@ -47,6 +56,7 @@ var logglyTags      = process.env.LOGGLY_TAGS || argv.logglyTags;
 var logLevel        = process.env.LOG_LEVEL || argv.logLevel || "debug";
 var logfile         = process.env.LOG_FILE || argv.logfile || "NONE";
 var ddbEndpointURL  = process.env.DDB_ENDPOINT || argv.ddbEndpoint || "AWS";
+var healthcheckContext = process.env.HEALTH_CHECK  || argv.healthCheckContext || "/ping";
 
 winston.handleExceptions([ winston.transports.Console]);
 if (logfile!==undefined && logfile!=="NONE"){
@@ -66,6 +76,15 @@ if (logglySubdomain!==undefined && logglySubdomain!="DISABLED") {
         level: logLevel
 })}
 winston.level = logLevel;
+
+if (redirectURL == "UNDEFINED") {
+    winston.error('Configuration incomplete... exiting')
+    return (-1);
+}
+
+var redirectParsed=url.parse(redirectURL);
+redirectURL += (redirectParsed.query==undefined) ? "?" : "&";
+
 // Code to run if we're in the master process
 if (cluster.isMaster) {
 
@@ -105,8 +124,11 @@ if (cluster.isMaster) {
     var sns = new AWS.SNS();
     var ddb;
 
-    if (ddbEndpointURL!==undefined && ddbEndpointURL!=="AWS")
-        ddb = new AWS.DynamoDB(`{endpoint: ${ddbEndpointURL}}`)
+    if (ddbEndpointURL!==undefined && ddbEndpointURL!=="AWS") {
+        var ep = new AWS.Endpoint(ddbEndpointURL);
+        ddb = new AWS.DynamoDB({endpoint: ep});
+        info(`Using local DynamoDB endpoint: ${ddbEndpointURL}`);
+    }
     else
         ddb = new AWS.DynamoDB();
 
@@ -140,6 +162,10 @@ if (cluster.isMaster) {
             req.qparams = query;
             debug("Email " + req.qparams.email || "not supplied");
             next();
+        } else if (pathname==healthcheckContext) {
+            res.writeHead(200, {'Content-Type': 'text/html'});
+            info(`Instance health check... succeeded`);
+            res.end("200 Success");
         }
         else {
             httpError(404, req, res, "Not Found");
@@ -240,14 +266,16 @@ if (cluster.isMaster) {
         }
         debug(`2 ${redirect} ${typeof redirect}`)
         if (redirect) {
-            debug('Generating redirect to ' + redirectURL);
+            var { email, uid, sig } = req.qparams;
+            var rURL=redirectURL + `email=${email}&uid=${uid}`;
+            debug('Generating redirect to ' + rURL);
             res.statusCode = 302;
-            res.setHeader("Location", redirectURL);
+            res.setHeader("Location", rURL);
             res.end();
         } else {
-            debug('Not generating redirect to ' + redirectURL);
+            debug('Not generating redirect to ' + rURL);
             res.writeHead(200, {'Content-Type': 'text/html'});      
-            res.write(`<html><body><a href="${redirectURL}">Thankyou for your consent</a></body></html>`);
+            res.write(`<html><body><a href="${rURL}">Thankyou for your consent</a></body></html>`);
             res.end();         
         }
     })
