@@ -1,4 +1,13 @@
-// Marketing Consent Logger - Tim Holmes - 3rd May 2018 - v5.5
+// Marketing Consent Logger - Tim Holmes - 3rd May 2018 - v6.2
+
+// to test locally, download local DynamoDB service (basically sqlite)
+// create table with e.g. following:
+// aws dynamodb create-table --table-name user-consent \
+// --attribute-definitions AttributeName=email,AttributeType=S AttributeName=uid,AttributeType=S \
+// --key-schema AttributeName=email,KeyType=HASH AttributeName=uid,KeyType=RANGE \
+// --endpoint-url http://localhost:3001 --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 --region us-east-1
+//
+// run this with e.g. -ddbEndpoint=http://localhost:3001
 
 var cluster = require('cluster'),
     util = require('util'),
@@ -7,7 +16,8 @@ var cluster = require('cluster'),
 require('winston-loggly-bulk');
 
 var argv = require('minimist')(process.argv.slice(2), 
-    {default : {redirectURL: 'UNDEFINED', 
+    {default : {redirectURL: "NOT_CONFIGURED",
+                redirectURLN: "NOT_CONFIGURED", 
                 logglySubdomain: "DISABLED", 
                 logglyToken: "DISABLED",
                 logglyTags: "pacman|gdpr",
@@ -15,16 +25,23 @@ var argv = require('minimist')(process.argv.slice(2),
                 consentTopic: "DISABLED",
                 context: "/consent",
                 logLevel: "debug",
-                ddbTable: "DISABLED",
                 snsTopic: "DISABLED",
                 redirect: true,
                 debug: true,
                 port: 8081,
+                ddbEndpoint: "AWS",
+                region: "us-east-1",
                 logfile: '/var/log/nodejs/gdpr.log'},
-    alias   : {p : 'port'},
+    alias   : {p : 'port', rY: 'redirectURL', rN: 'redirectURLN'},
     boolean : ["redirect"]});
 
-    if ((typeof argv.redirect)=="string") argv.redirect=argv.redirect!=="false";
+if ((typeof argv.redirect)=="string") argv.redirect=argv.redirect!=="false";
+
+// test - 
+// node cluster.js -p 3000 --redirectURL "http://www.net-a-porter.com/optin" --redirectURLN "http://www.net-a-porter.com/optout" --redirect false --debug true --ddbEndpoint "http://localhost:3001" --consentTable "user-consent"
+//
+// view data
+// aws dynamodb scan --table-name user-consent --region us-east-1  --endpoint-url http://localhost:3001
 
 if (cluster.isMaster && argv.debug) {
     console.log("Welcome back my friends to the show that never ends...");
@@ -35,6 +52,7 @@ if (cluster.isMaster && argv.debug) {
 }
 
 var redirectURL     = process.env.REDIRECT_URL || argv.redirectURL;
+var redirectURLN    = process.env.REDIRECT_URL_N || argv.redirectURLN;
 var ddbTable        = process.env.CONSENT_TABLE || argv.consentTable;
 var snsTopic        = process.env.CONSENT_TOPIC || argv.consentTopic;
 var webContext      = process.env.WEB_CONTEXT || argv.context;
@@ -44,13 +62,22 @@ var logglySubdomain = process.env.LOGGLY_SUBDOMAIN || argv.logglySubdomain;
 var logglyTags      = process.env.LOGGLY_TAGS || argv.logglyTags;
 var logLevel        = process.env.LOG_LEVEL || argv.logLevel || "debug";
 var logfile         = process.env.LOG_FILE || argv.logfile || "NONE";
+var ddbEndpointURL  = process.env.DDB_ENDPOINT || argv.ddbEndpoint || "AWS";
 var healthcheckContext = process.env.HEALTH_CHECK  || argv.healthCheckContext || "/ping";
 
-winston.handleExceptions([ winston.transports.Console]);
+var extendURL = (x) => {
+    var urlParsed=url.parse(x);
+    x += (urlParsed.query==undefined) ? "?" : "&";
+    return x        
+}
+redirectURL = extendURL(redirectURL);
+redirectURLN = extendURL(redirectURLN);
+
+//winston.handleExceptions([ winston.transports.Console]);
 if (logfile!==undefined && logfile!=="NONE"){
     winston.add(winston.transports.File, {
         filename: logfile,
-        handleExceptions: true,
+        handleExceptions: false,
         json: false
     })
 }
@@ -60,18 +87,15 @@ if (logglySubdomain!==undefined && logglySubdomain!="DISABLED") {
         subdomain: logglySubdomain,
         tags: logglyTags.split("|"),
         json: true,
-        handleExceptions: true,
+        handleExceptions: false,
         level: logLevel
 })}
 winston.level = logLevel;
 
-if (redirectURL == "UNDEFINED") {
+if ((redirectURL == "NOT_CONFIGURED") || (redirectURLN == "NOT_CONFIGURED")) {
     winston.error('Configuration incomplete... exiting')
     return (-1);
 }
-
-var redirectParsed=url.parse(redirectURL);
-redirectURL += (redirectParsed.query==undefined) ? "?" : "&";
 
 // Code to run if we're in the master process
 if (cluster.isMaster) {
@@ -110,8 +134,17 @@ if (cluster.isMaster) {
     AWS.config.region = process.env.REGION || argv.region;
 
     var sns = new AWS.SNS();
-    var ddb = new AWS.DynamoDB();
-    
+    var ddb;
+
+    if (ddbEndpointURL!==undefined && ddbEndpointURL!=="AWS") {
+        var ep = new AWS.Endpoint(ddbEndpointURL);
+        ddb = new AWS.DynamoDB({endpoint: ep});
+        info(`Using local DynamoDB endpoint: ${ddbEndpointURL}`);
+    }
+    else
+        ddb = new AWS.DynamoDB();
+
+
     var ddbDisabled = ddbTable == "DISABLED";
     var snsDisabled = snsTopic == "DISABLED";
 
@@ -179,23 +212,28 @@ if (cluster.isMaster) {
 
     // add query params to DynamoDB + raise event via SNS if configured
     app.use((req, res, next) => {
-        var { email, uid, sig } = req.qparams;
+        var { email, uid, sig, consent: consentParam, campaign } = req.qparams;
+        var consent = consentParam==undefined || !consentParam.toUpperCase().startsWith('N');
+        req.consent = consent;
         if (email!==undefined && uid!==undefined) {
             var d = (new Date()).toJSON();
             var item = {
                 'email': {'S': email},
                 'uid': {'S': uid},
                 'sig': {'S': sig || "NOT_SUPPLIED"},
+                'consent': {'BOOL': consent},
+                'campaign': {'S': campaign || "DEFAULT"},
                 'timestamp': {'S': d}
             };
 
             if (!ddbDisabled) {
                 debug("Persisting consent " + util.inspect(item) + " into " + ddbTable);
-                ddb.putItem({
+                var ddbArgs = {
                     'TableName': ddbTable,
-                    'Item': item,
-                    'Expected': { 'email': { Exists: false } }        
-                }, function(err, data) {
+                    'Item': item
+                };
+
+                ddb.putItem(ddbArgs, function(err, data) {
                     if (err) {
                         var returnStatus = 500;
 
@@ -239,10 +277,9 @@ if (cluster.isMaster) {
         if (req.qparams!==undefined && req.qparams.redirect!==undefined) {
             redirect=req.qparams.redirect==="true";
         }
-        debug(`2 ${redirect} ${typeof redirect}`)
-        if (redirect) {
-            var { email, uid, sig } = req.qparams;
-            var rURL=redirectURL + `email=${email}&uid=${uid}`;
+    var { email, uid, sig } = req.qparams;
+    var rURL=(req.consent ? redirectURL : redirectURLN) + `email=${email}&uid=${uid}`;
+    if (redirect) {
             debug('Generating redirect to ' + rURL);
             res.statusCode = 302;
             res.setHeader("Location", rURL);
@@ -250,7 +287,7 @@ if (cluster.isMaster) {
         } else {
             debug('Not generating redirect to ' + rURL);
             res.writeHead(200, {'Content-Type': 'text/html'});      
-            res.write(`<html><body><a href="${rURL}">Thankyou for your consent</a></body></html>`);
+            res.write(`<html><body><a href="${rURL}">Thankyou for your reply</a></body></html>`);
             res.end();         
         }
     })
