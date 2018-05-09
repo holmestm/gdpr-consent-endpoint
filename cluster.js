@@ -25,7 +25,6 @@ var argv = require('minimist')(process.argv.slice(2),
                 consentTopic: "DISABLED",
                 context: "/consent",
                 logLevel: "debug",
-                ddbTable: "DISABLED",
                 snsTopic: "DISABLED",
                 redirect: true,
                 debug: true,
@@ -33,10 +32,16 @@ var argv = require('minimist')(process.argv.slice(2),
                 ddbEndpoint: "AWS",
                 region: "us-east-1",
                 logfile: '/var/log/nodejs/gdpr.log'},
-    alias   : {p : 'port'},
+    alias   : {p : 'port', rY: 'redirectURL', rN: 'redirectURLN'},
     boolean : ["redirect"]});
 
-    if ((typeof argv.redirect)=="string") argv.redirect=argv.redirect!=="false";
+if ((typeof argv.redirect)=="string") argv.redirect=argv.redirect!=="false";
+
+// test - 
+// node cluster.js -p 3000 --redirectURL "http://www.net-a-porter.com/optin" --redirectURLN "http://www.net-a-porter.com/optout" --redirect false --debug true --ddbEndpoint "http://localhost:3001" --consentTable "user-consent"
+//
+// view data
+// aws dynamodb scan --table-name user-consent --region us-east-1  --endpoint-url http://localhost:3001
 
 if (cluster.isMaster && argv.debug) {
     console.log("Welcome back my friends to the show that never ends...");
